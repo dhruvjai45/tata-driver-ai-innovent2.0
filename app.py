@@ -6,7 +6,7 @@ from tensorflow.keras.applications.efficientnet import preprocess_input as effic
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as mobilenet_preprocess_input
 from PIL import Image
 
-# — Driver behavior classes —
+# — Driver behavior class labels —
 CLASS_NAMES = [
     "Other Activities",
     "Safe Driving",
@@ -15,55 +15,65 @@ CLASS_NAMES = [
     "Turning"
 ]
 
-# — Load models once —
+# — Load all models once —
 @st.cache_resource
 def load_models():
-    driver_m = load_model("models/driver_behaviour.keras", compile=False)
-    drow_m = load_model("models/final_drowsiness_model.keras", compile=False)
-    steer_m = load_model("models/advanced_final_steering_model.keras", compile=False)
-
+    driver_m = load_model(
+        "driver_behaviour.keras",
+        custom_objects={"preprocess_input": efficientnet_preprocess_input},
+        compile=False
+    )
+    drow_m = load_model(
+        "final_drowsiness_model.keras",
+        custom_objects={"preprocess_input": mobilenet_preprocess_input},
+        compile=False
+    )
+    steer_m = load_model("advanced_final_steering_model.keras", compile=False)
     return driver_m, drow_m, steer_m
 
 driver_model, drowsiness_model, steering_model = load_models()
 
-st.set_page_config(layout="wide")
+# — Streamlit App UI —
+st.set_page_config(page_title="Smart Driver Monitor", layout="wide")
 st.title("🚗 Smart Driver Monitoring Dashboard")
-uploaded = st.file_uploader("Upload a frame", type=["jpg", "jpeg", "png"])
+
+uploaded = st.file_uploader("📤 Upload a frame", type=["jpg", "jpeg", "png"])
 
 if uploaded:
     img = Image.open(uploaded).convert("RGB")
-    st.image(img, use_container_width=True)
+    st.image(img, caption="Uploaded Image", use_container_width=True)
 
-    # preprocess common
-    def prep(img, size, preprocess_fn=None):
-        x = img.resize(size)
-        arr = np.array(x, dtype="float32")
+    # — Common preprocessing function —
+    def prep(image, size, preprocess_fn=None):
+        image = image.resize(size)
+        arr = np.array(image, dtype="float32")
         if preprocess_fn:
             arr = preprocess_fn(arr)
         arr = np.expand_dims(arr, 0)
         return arr
 
-    # Driver Behaviour
+    # --- Driver Behavior Prediction ---
     beh_arr = prep(img, (224, 224), efficientnet_preprocess_input)
     beh_preds = driver_model.predict(beh_arr)[0]
     beh_idx = np.argmax(beh_preds)
     beh_label = CLASS_NAMES[beh_idx]
     beh_conf = beh_preds[beh_idx]
 
-    # Drowsiness
+    # --- Drowsiness Detection ---
     drow_arr = prep(img, (224, 224), mobilenet_preprocess_input)
     drow_prob = float(drowsiness_model.predict(drow_arr)[0][0])
+    alert_prob = 1 - drow_prob
+    drowsy_status = "😴 Drowsy" if drow_prob > 0.5 else "🙂 Alert"
 
-    # Steering
-    steer_arr = prep(img, (160, 80))
-    steer_arr /= 255.0
+    # --- Steering Angle Prediction ---
+    steer_arr = prep(img, (160, 80)) / 255.0
     steer_angle = float(steering_model.predict(steer_arr)[0][0])
 
-    # Layout
+    # — Layout: Three Columns —
     col1, col2, col3 = st.columns(3, gap="large")
 
     with col1:
-        st.subheader("Driver Behaviour")
+        st.subheader("🧠 Driver Behaviour")
         st.metric(label=beh_label, value=f"{beh_conf:.1%}")
         st.bar_chart(
             {name: float(p) for name, p in zip(CLASS_NAMES, beh_preds)},
@@ -71,22 +81,27 @@ if uploaded:
         )
 
     with col2:
-        st.subheader("Drowsiness")
+        st.subheader("😴 Drowsiness Detection")
+        if drow_prob > 0.5:
+            st.error(f"**{drowsy_status}**", icon="⚠️")
+        else:
+            st.success(f"**{drowsy_status}**", icon="✅")
+
         st.metric(
             label="Alertness",
-            value=f"{(1 - drow_prob):.1%}",
+            value=f"{alert_prob:.1%}",
             delta=f"{drow_prob:.1%} drowsy",
             delta_color="inverse"
         )
-        st.progress(drow_prob)
+        st.progress(drow_prob, text="Drowsiness Risk")
 
     with col3:
-        st.subheader("Steering Angle")
-        st.metric(label="Degrees", value=f"{steer_angle:.2f}°")
+        st.subheader("🛞 Steering Angle")
+        st.metric(label="Angle", value=f"{steer_angle:.2f}°")
         if abs(steer_angle) > 10:
-            st.write("⚠️ High steering angle!")
+            st.warning("⚠️ High steering angle!")
         else:
-            st.write("✅ Within normal range")
+            st.success("✅ Within normal range")
 
     st.markdown("---")
-    st.caption("Powered by EfficientNet, MobileNetV2 & your custom CNN")
+    st.caption("⚙️ Powered by EfficientNet, MobileNetV2 & Custom CNNs")
