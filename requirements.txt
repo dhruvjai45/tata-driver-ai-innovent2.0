@@ -1,2 +1,6 @@
 streamlit
 tensorflow==2.16.1
+streamlit
+torch
+torchvision
+Pillow
