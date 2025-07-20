@@ -1,107 +1,119 @@
 import streamlit as st
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.efficientnet import preprocess_input as efficientnet_preprocess_input
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as mobilenet_preprocess_input
+import torch
+import torchvision.transforms as transforms
 from PIL import Image
 
-# — Driver behavior class labels —
-CLASS_NAMES = [
-    "Other Activities",
-    "Safe Driving",
-    "Talking Phone",
-    "Texting Phone",
-    "Turning"
-]
+# Set page config
+st.set_page_config(page_title="Smart Driver Monitoring", layout="wide")
 
-# — Load all models once —
+# Inject custom CSS for dark theme
+st.markdown("""
+    <style>
+    body {
+        background-color: #0e1117;
+        color: #FAFAFA;
+    }
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    .uploadbox, .outputbox {
+        border: 1px solid #444;
+        background-color: #1c1c1c;
+        border-radius: 10px;
+        padding: 2rem;
+        height: 100%;
+    }
+    .upload-area {
+        border: 2px dashed #555;
+        padding: 2rem;
+        text-align: center;
+        color: #888;
+        cursor: pointer;
+        border-radius: 10px;
+        font-size: 1.2rem;
+    }
+    .stButton > button {
+        background-color: #F39C12;
+        color: black;
+    }
+    .stRadio > div {
+        color: #FAFAFA;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Title and Info
+st.title("🧠 Smart Driver Monitoring System")
+st.caption("Detects driver drowsiness, behavior, and steering direction")
+
+# Sidebar Model Choice
+model_choice = st.sidebar.radio(
+    "Select Model:",
+    ["Drowsiness Detection", "Driver Behavior", "Steering Prediction"]
+)
+
+# Load Models
 @st.cache_resource
-def load_models():
-    driver_m = load_model(
-        "driver_behaviour.keras",
-        custom_objects={"preprocess_input": efficientnet_preprocess_input},
-        compile=False
-    )
-    drow_m = load_model(
-        "final_drowsiness_model.keras",
-        custom_objects={"preprocess_input": mobilenet_preprocess_input},
-        compile=False
-    )
-    steer_m = load_model("advanced_final_steering_model.keras", compile=False)
-    return driver_m, drow_m, steer_m
+def load_model(model_path):
+    model = torch.load(model_path, map_location=torch.device('cpu'))
+    model.eval()
+    return model
 
-driver_model, drowsiness_model, steering_model = load_models()
+model_paths = {
+    "Drowsiness Detection": "models/final_drowsiness_model.pt",
+    "Driver Behavior": "models/driver_behaviour.pt",
+    "Steering Prediction": "models/advanced_final_steering_model.pt"
+}
 
-# — Streamlit App UI —
-st.set_page_config(page_title="Smart Driver Monitor", layout="wide")
-st.title("🚗 Smart Driver Monitoring Dashboard")
+model = load_model(model_paths[model_choice])
 
-uploaded = st.file_uploader("📤 Upload a frame", type=["jpg", "jpeg", "png"])
+# Preprocessing
+def preprocess_image(image, model_type):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    image = image.convert('RGB')
+    image = transform(image).unsqueeze(0)
+    return image
 
-if uploaded:
-    img = Image.open(uploaded).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_container_width=True)
+# Class Labels
+labels = {
+    "Drowsiness Detection": ["Alert", "Drowsy"],
+    "Driver Behavior": ["Normal", "Phone Call", "Drinking", "Smoking", "Distracted"],
+    "Steering Prediction": ["Left", "Straight", "Right"]
+}
 
-    # — Common preprocessing function —
-    def prep(image, size, preprocess_fn=None):
-        image = image.resize(size)
-        arr = np.array(image, dtype="float32")
-        if preprocess_fn:
-            arr = preprocess_fn(arr)
-        arr = np.expand_dims(arr, 0)
-        return arr
+# Layout
+col1, col2 = st.columns([1, 1])
 
-    # --- Driver Behavior Prediction ---
-    beh_arr = prep(img, (224, 224), efficientnet_preprocess_input)
-    beh_preds = driver_model.predict(beh_arr)[0]
-    beh_idx = np.argmax(beh_preds)
-    beh_label = CLASS_NAMES[beh_idx]
-    beh_conf = beh_preds[beh_idx]
+with col1:
+    st.markdown("#### Input Image")
+    st.markdown('<div class="uploadbox">', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+    if not uploaded_file:
+        st.markdown('<div class="upload-area">Drop Image Here<br>– or –<br>Click to Upload</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- Drowsiness Detection ---
-    drow_arr = prep(img, (224, 224), mobilenet_preprocess_input)
-    drow_prob = float(drowsiness_model.predict(drow_arr)[0][0])
-    alert_prob = 1 - drow_prob
-    drowsy_status = "😴 Drowsy" if drow_prob > 0.5 else "🙂 Alert"
+with col2:
+    st.markdown("#### Prediction Output")
+    st.markdown('<div class="outputbox">', unsafe_allow_html=True)
 
-    # --- Steering Angle Prediction ---
-    steer_arr = prep(img, (160, 80)) / 255.0
-    steer_angle = float(steering_model.predict(steer_arr)[0][0])
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    # — Layout: Three Columns —
-    col1, col2, col3 = st.columns(3, gap="large")
+        with torch.no_grad():
+            input_tensor = preprocess_image(image, model_choice)
+            output = model(input_tensor)
+            if model_choice == "Steering Prediction":
+                prediction = torch.argmax(output, dim=1).item()
+            else:
+                prediction = torch.argmax(torch.softmax(output, dim=1), dim=1).item()
 
-    with col1:
-        st.subheader("🧠 Driver Behaviour")
-        st.metric(label=beh_label, value=f"{beh_conf:.1%}")
-        st.bar_chart(
-            {name: float(p) for name, p in zip(CLASS_NAMES, beh_preds)},
-            use_container_width=True
-        )
+        st.success(f"🧾 Predicted: **{labels[model_choice][prediction]}**")
+    else:
+        st.markdown('<div class="upload-area">Waiting for Image...</div>', unsafe_allow_html=True)
 
-    with col2:
-        st.subheader("😴 Drowsiness Detection")
-        if drow_prob > 0.5:
-            st.error(f"**{drowsy_status}**", icon="⚠️")
-        else:
-            st.success(f"**{drowsy_status}**", icon="✅")
-
-        st.metric(
-            label="Alertness",
-            value=f"{alert_prob:.1%}",
-            delta=f"{drow_prob:.1%} drowsy",
-            delta_color="inverse"
-        )
-        st.progress(drow_prob, text="Drowsiness Risk")
-
-    with col3:
-        st.subheader("🛞 Steering Angle")
-        st.metric(label="Angle", value=f"{steer_angle:.2f}°")
-        if abs(steer_angle) > 10:
-            st.warning("⚠️ High steering angle!")
-        else:
-            st.success("✅ Within normal range")
-
-    st.markdown("---")
-    st.caption("⚙️ Powered by EfficientNet, MobileNetV2 & Custom CNNs")
+    st.markdown("</div>", unsafe_allow_html=True)
