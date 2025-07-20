@@ -18,9 +18,9 @@ CLASS_NAMES = [
 # — Load models once —
 @st.cache_resource
 def load_models():
-    driver_m = load_model("driver_behaviour.keras", compile=False)
-    drow_m = load_model("final_drowsiness_model.keras", compile=False)
-    steer_m = load_model("advanced_final_steering_model.keras", compile=False)
+    driver_m = load_model("models/driver_behaviour.keras")
+    drow_m = load_model("models/final_drowsiness_model.keras")
+    steer_m = load_model("models/advanced_final_steering_model.keras")
     return driver_m, drow_m, steer_m
 
 driver_model, drowsiness_model, steering_model = load_models()
