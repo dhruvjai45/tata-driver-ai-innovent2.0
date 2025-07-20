@@ -1,72 +1,91 @@
 import streamlit as st
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.applications.efficientnet import preprocess_input as efficientnet_preprocess_input
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as mobilenet_preprocess_input
 from PIL import Image
 
-# Set page config
-st.set_page_config(page_title="Driver Monitoring System", layout="centered")
+# — Driver behavior classes —
+CLASS_NAMES = [
+    "Other Activities",
+    "Safe Driving",
+    "Talking Phone",
+    "Texting Phone",
+    "Turning"
+]
 
-# Title
-st.title("🚗 Driver Monitoring Inference System")
-st.markdown("""
-Upload an image of a driver to detect:
-- **Steering Prediction**
-- **Drowsiness Detection**
-- **Driver Behavior Classification**
-""")
-
-# Load models (make sure these paths are correct relative to app.py)
+# — Load models once —
 @st.cache_resource
 def load_models():
-    steering_model = tf.keras.models.load_model("models/advanced_final_steering_model.keras")
-    drowsiness_model = tf.keras.models.load_model("models/final_drowsiness_model.keras")
-    behavior_model = tf.keras.models.load_model("models/driver_behaviour.keras")
-    return steering_model, drowsiness_model, behavior_model
+    driver_m = load_model("driver_behaviour.keras", compile=False)
+    drow_m = load_model("final_drowsiness_model.keras", compile=False)
+    steer_m = load_model("advanced_final_steering_model.keras", compile=False)
+    return driver_m, drow_m, steer_m
 
-steering_model, drowsiness_model, behavior_model = load_models()
+driver_model, drowsiness_model, steering_model = load_models()
 
-# Optional: labels for behavior model
-behavior_labels = ["Normal", "Texting", "Drinking", "Phone Call", "Other"]  # change as per your model
+st.set_page_config(layout="wide")
+st.title("🚗 Smart Driver Monitoring Dashboard")
+uploaded = st.file_uploader("Upload a frame", type=["jpg", "jpeg", "png"])
 
-# Image preprocessing function
-def preprocess_image(image, target_size=(224, 224)):
-    image = image.resize(target_size)
-    img_array = tf.keras.preprocessing.image.img_to_array(image)
-    img_array = img_array / 255.0
-    return np.expand_dims(img_array, axis=0)
+if uploaded:
+    img = Image.open(uploaded).convert("RGB")
+    st.image(img, use_container_width=True)
 
-# File uploader
-uploaded_file = st.file_uploader("Upload Driver Image", type=["jpg", "jpeg", "png"])
+    # preprocess common
+    def prep(img, size, preprocess_fn=None):
+        x = img.resize(size)
+        arr = np.array(x, dtype="float32")
+        if preprocess_fn:
+            arr = preprocess_fn(arr)
+        arr = np.expand_dims(arr, 0)
+        return arr
 
-if uploaded_file:
-    image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Uploaded Image", use_column_width=True)
+    # Driver Behaviour
+    beh_arr = prep(img, (224, 224), efficientnet_preprocess_input)
+    beh_preds = driver_model.predict(beh_arr)[0]
+    beh_idx = np.argmax(beh_preds)
+    beh_label = CLASS_NAMES[beh_idx]
+    beh_conf = beh_preds[beh_idx]
 
-    # Process and predict
-    with st.spinner("Analyzing image..."):
+    # Drowsiness
+    drow_arr = prep(img, (224, 224), mobilenet_preprocess_input)
+    drow_prob = float(drowsiness_model.predict(drow_arr)[0][0])
 
-        # Preprocess for each model (adjust target_size if needed)
-        input_steering = preprocess_image(image, (224, 224))
-        input_drowsiness = preprocess_image(image, (224, 224))
-        input_behavior = preprocess_image(image, (224, 224))
+    # Steering
+    steer_arr = prep(img, (160, 80))
+    steer_arr /= 255.0
+    steer_angle = float(steering_model.predict(steer_arr)[0][0])
 
-        # Run predictions
-        steering_pred = steering_model.predict(input_steering)
-        drowsiness_pred = drowsiness_model.predict(input_drowsiness)
-        behavior_pred = behavior_model.predict(input_behavior)
+    # Layout
+    col1, col2, col3 = st.columns(3, gap="large")
 
-        # Format predictions (adjust based on your model output)
-        # Example: regression output
-        if steering_pred.shape[1] == 1:
-            steering_result = f"Steering Angle: {steering_pred[0][0]:.2f}°"
+    with col1:
+        st.subheader("Driver Behaviour")
+        st.metric(label=beh_label, value=f"{beh_conf:.1%}")
+        st.bar_chart(
+            {name: float(p) for name, p in zip(CLASS_NAMES, beh_preds)},
+            use_container_width=True
+        )
+
+    with col2:
+        st.subheader("Drowsiness")
+        st.metric(
+            label="Alertness",
+            value=f"{(1 - drow_prob):.1%}",
+            delta=f"{drow_prob:.1%} drowsy",
+            delta_color="inverse"
+        )
+        st.progress(drow_prob)
+
+    with col3:
+        st.subheader("Steering Angle")
+        st.metric(label="Degrees", value=f"{steer_angle:.2f}°")
+        if abs(steer_angle) > 10:
+            st.write("⚠️ High steering angle!")
         else:
-            steering_result = f"Steering Class: {np.argmax(steering_pred)}"
+            st.write("✅ Within normal range")
 
-        drowsiness_result = "Drowsy 😴" if drowsiness_pred[0][0] > 0.5 else "Alert 🙂"
-        behavior_result = behavior_labels[np.argmax(behavior_pred)] if len(behavior_pred[0]) == len(behavior_labels) else f"Behavior class: {np.argmax(behavior_pred)}"
-
-    # Display results
-    st.success("✅ Predictions Complete:")
-    st.markdown(f"**🧭 Steering Prediction:** {steering_result}")
-    st.markdown(f"**😵 Drowsiness Detection:** {drowsiness_result}")
-    st.markdown(f"**🧍 Driver Behavior:** {behavior_result}")
+    st.markdown("---")
+    st.caption("Powered by EfficientNet, MobileNetV2 & your custom CNN")
